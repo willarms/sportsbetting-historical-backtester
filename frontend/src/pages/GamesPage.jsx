@@ -1,43 +1,110 @@
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchTeams, fetchGames } from "../api/client.js";
+import { fetchTeams, fetchSeasons, fetchBookmakers, fetchGames } from "../api/client.js";
+import { BOOK_LABELS, bookLabel } from "../utils/bookmakers.js";
+
+// ── Formatting helpers ──────────────────────────────────────────────────────
+
+function fmtOdds(price) {
+  if (price == null) return "–";
+  return price > 0 ? `+${price}` : `${price}`;
+}
+
+function fmtLine(line) {
+  if (line == null) return "–";
+  return line > 0 ? `+${line}` : `${line}`;
+}
+
+function fmtMargin(margin) {
+  if (margin == null) return "";
+  const abs = Math.abs(margin);
+  return abs % 1 === 0 ? abs.toFixed(0) : abs.toFixed(1);
+}
+
+// ── Cells for each betting market ───────────────────────────────────────────
+
+function MLCell({ lines }) {
+  if (!lines || lines.ml_home == null) return <td className="no-odds">–</td>;
+  const { ml_home, ml_away, ml_home_hit } = lines;
+  return (
+    <td>
+      <span style={{ color: ml_home_hit ? "var(--green)" : "var(--muted)", fontWeight: ml_home_hit ? 600 : 400 }}>
+        H {fmtOdds(ml_home)}
+      </span>
+      <span style={{ color: "var(--muted)", margin: "0 4px" }}>/</span>
+      <span style={{ color: !ml_home_hit ? "var(--green)" : "var(--muted)", fontWeight: !ml_home_hit ? 600 : 400 }}>
+        A {fmtOdds(ml_away)}
+      </span>
+    </td>
+  );
+}
+
+function SpreadCell({ lines }) {
+  if (!lines || lines.spread_line == null) return <td className="no-odds">–</td>;
+  const { spread_line, spread_home_covered, spread_margin } = lines;
+  const hit = spread_home_covered;
+  return (
+    <td>
+      <span style={{ color: "var(--text-dim)" }}>H {fmtLine(spread_line)}</span>
+      {" "}
+      <span style={{ color: hit ? "var(--green)" : "var(--red)", fontWeight: 600 }}>
+        {hit ? "✓" : "✗"} {fmtMargin(spread_margin)}
+      </span>
+    </td>
+  );
+}
+
+function TotalCell({ lines }) {
+  if (!lines || lines.total_line == null) return <td className="no-odds">–</td>;
+  const { total_line, total_went_over, total_margin } = lines;
+  return (
+    <td>
+      <span style={{ color: "var(--text-dim)" }}>{total_line}</span>
+      {" "}
+      <span style={{ color: total_went_over ? "var(--green)" : "var(--red)", fontWeight: 600 }}>
+        {total_went_over ? "O" : "U"} {fmtMargin(total_margin)}
+      </span>
+    </td>
+  );
+}
+
+// ── Main page ───────────────────────────────────────────────────────────────
 
 export default function GamesPage() {
   const navigate = useNavigate();
 
-  // Filter state
-  const [team, setTeam] = useState("");
+  const [team, setTeam]         = useState("");
+  const [season, setSeason]     = useState("");
+  const [book, setBook]         = useState("draftkings");
   const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  const [page, setPage] = useState(1);
+  const [dateTo, setDateTo]     = useState("");
+  const [page, setPage]         = useState(1);
 
-  // Data state
-  const [teams, setTeams] = useState([]);
-  const [result, setResult] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [teams, setTeams]         = useState([]);
+  const [seasons, setSeasons]     = useState([]);
+  const [bookmakers, setBookmakers] = useState([]);
+  const [result, setResult]       = useState(null);
+  const [loading, setLoading]     = useState(false);
+  const [error, setError]         = useState(null);
 
-  // Load team list once
   useEffect(() => {
     fetchTeams().then(setTeams).catch(() => {});
+    fetchSeasons().then(setSeasons).catch(() => {});
+    fetchBookmakers().then(setBookmakers).catch(() => {});
   }, []);
 
-  const load = useCallback(
-    (p = page) => {
-      setLoading(true);
-      setError(null);
-      fetchGames({ team, dateFrom, dateTo, page: p, pageSize: 50 })
-        .then(setResult)
-        .catch((e) => setError(e.message))
-        .finally(() => setLoading(false));
-    },
-    [team, dateFrom, dateTo, page]
-  );
+  const load = useCallback((p = 1, overrides = {}) => {
+    const params = { team, season, book, dateFrom, dateTo, page: p, pageSize: 50, ...overrides };
+    setLoading(true);
+    setError(null);
+    fetchGames(params)
+      .then(setResult)
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [team, season, book, dateFrom, dateTo]);
 
-  // Reload on page change
-  useEffect(() => {
-    load(page);
-  }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Re-fetch whenever page changes OR whenever any filter changes (load recreates when filters change)
+  useEffect(() => { load(page); }, [page, load]); // eslint-disable-line
 
   function handleFilter(e) {
     e.preventDefault();
@@ -46,20 +113,17 @@ export default function GamesPage() {
   }
 
   function handleReset() {
-    setTeam("");
-    setDateFrom("");
-    setDateTo("");
+    setTeam(""); setSeason(""); setBook("draftkings"); setDateFrom(""); setDateTo("");
     setPage(1);
-    // load with cleared params
     setLoading(true);
     setError(null);
-    fetchGames({ page: 1, pageSize: 50 })
+    fetchGames({ book: "draftkings", page: 1, pageSize: 50 })
       .then(setResult)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }
 
-  const games = result?.games ?? [];
+  const games      = result?.games ?? [];
   const totalPages = result?.pages ?? 1;
 
   return (
@@ -73,28 +137,36 @@ export default function GamesPage() {
             <label>Team</label>
             <select value={team} onChange={(e) => setTeam(e.target.value)}>
               <option value="">All teams</option>
-              {teams.map((t) => (
-                <option key={t} value={t}>{t}</option>
+              {teams.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+
+          <div className="filter-group">
+            <label>Season</label>
+            <select value={season} onChange={(e) => setSeason(e.target.value)}>
+              <option value="">All seasons</option>
+              {seasons.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+
+          <div className="filter-group">
+            <label>Odds from</label>
+            <select value={book} onChange={(e) => setBook(e.target.value)}>
+              <option value="consensus">Consensus (avg)</option>
+              {bookmakers.map((b) => (
+                <option key={b} value={b}>{bookLabel(b)}</option>
               ))}
             </select>
           </div>
 
           <div className="filter-group">
             <label>From</label>
-            <input
-              type="date"
-              value={dateFrom}
-              onChange={(e) => setDateFrom(e.target.value)}
-            />
+            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
           </div>
 
           <div className="filter-group">
             <label>To</label>
-            <input
-              type="date"
-              value={dateTo}
-              onChange={(e) => setDateTo(e.target.value)}
-            />
+            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
           </div>
 
           <div className="filter-group" style={{ justifyContent: "flex-end" }}>
@@ -107,10 +179,7 @@ export default function GamesPage() {
       </div>
 
       {error && <div className="error-msg">{error}</div>}
-
-      {result && (
-        <p className="meta">{result.total.toLocaleString()} games found</p>
-      )}
+      {result && <p className="meta">{result.total.toLocaleString()} games</p>}
 
       <div className="card">
         {loading ? (
@@ -126,22 +195,24 @@ export default function GamesPage() {
                   <th>Home</th>
                   <th>Away</th>
                   <th>Score</th>
-                  <th>Total</th>
+                  <th title="Opening moneyline (DraftKings preferred). Bold = winner.">Moneyline</th>
+                  <th title="Home team spread. ✓/✗ = covered/missed, number = by how much.">Spread (H)</th>
+                  <th title="Over/under line. O/U = result, number = by how much.">Total O/U</th>
                   <th>Result</th>
                 </tr>
               </thead>
               <tbody>
                 {games.map((g) => (
                   <tr key={g.game_id} onClick={() => navigate(`/games/${g.game_id}`)}>
-                    <td>{g.game_date}</td>
+                    <td style={{ whiteSpace: "nowrap" }}>{g.game_date}</td>
                     <td>{g.home_team}</td>
                     <td>{g.away_team}</td>
-                    <td>
-                      <strong>{g.home_score}</strong>
-                      {" – "}
-                      <strong>{g.away_score}</strong>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      <strong>{g.home_score}</strong>–<strong>{g.away_score}</strong>
                     </td>
-                    <td>{g.total_score}</td>
+                    <MLCell    lines={g.lines} />
+                    <SpreadCell lines={g.lines} />
+                    <TotalCell  lines={g.lines} />
                     <td>
                       {g.home_win
                         ? <span className="badge badge-win">Home W</span>
@@ -154,22 +225,13 @@ export default function GamesPage() {
           </div>
         )}
 
-        {/* Pagination */}
         {!loading && totalPages > 1 && (
           <div className="pagination">
-            <button
-              className="btn btn-ghost"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => p - 1)}
-            >
+            <button className="btn btn-ghost" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
               ← Prev
             </button>
             <span>Page {page} of {totalPages}</span>
-            <button
-              className="btn btn-ghost"
-              disabled={page >= totalPages}
-              onClick={() => setPage((p) => p + 1)}
-            >
+            <button className="btn btn-ghost" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>
               Next →
             </button>
           </div>

@@ -1,3 +1,10 @@
+:root {
+  --green:    #4ade80;
+  --red:      #f87171;
+  --muted:    #94a3b8;
+  --text-dim: #cbd5e1;
+}
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
@@ -151,5 +158,6 @@ tbody td { padding: 0.65rem 0.75rem; }
 .back-link { color: #7c83ff; font-size: 0.875rem; margin-bottom: 1rem; display: inline-block; }
 .back-link:hover { text-decoration: underline; }
 .empty { color: #64748b; padding: 2rem 0; text-align: center; }
+td.no-odds { color: #3d4460; }
 .loading { color: #64748b; padding: 2rem 0; text-align: center; }
 .error-msg { color: #f87171; padding: 1rem; background: #450a0a; border-radius: 6px; margin-bottom: 1rem; }

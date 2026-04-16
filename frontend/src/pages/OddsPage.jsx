@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
+import { bookLabel } from "../utils/bookmakers.js";
 import { fetchGame, fetchGameOdds } from "../api/client.js";
 
 const MARKET_LABELS = {
@@ -88,7 +89,7 @@ export default function OddsPage() {
                 <tbody>
                   {byMarket[market].map((row, i) => (
                     <tr key={i} style={{ cursor: "default" }}>
-                      <td style={{ textTransform: "capitalize" }}>{row.bookmaker}</td>
+                      <td>{bookLabel(row.bookmaker)}</td>
                       <td>{row.outcome_label}</td>
                       <td>{row.line_value ?? "–"}</td>
                       <td style={{ fontWeight: 600, color: row.price > 0 ? "#4ade80" : "#f87171" }}>

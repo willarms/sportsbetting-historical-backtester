@@ -9,11 +9,23 @@ export async function fetchTeams() {
   return data;
 }
 
-export async function fetchGames({ team, dateFrom, dateTo, page = 1, pageSize = 50 } = {}) {
+export async function fetchSeasons() {
+  const { data } = await api.get("/seasons");
+  return data;
+}
+
+export async function fetchBookmakers() {
+  const { data } = await api.get("/bookmakers");
+  return data;
+}
+
+export async function fetchGames({ team, season, book, dateFrom, dateTo, page = 1, pageSize = 50 } = {}) {
   const params = { page, page_size: pageSize };
-  if (team) params.team = team;
+  if (team)     params.team      = team;
+  if (season)   params.season    = season;
+  if (book)     params.book      = book;
   if (dateFrom) params.date_from = dateFrom;
-  if (dateTo) params.date_to = dateTo;
+  if (dateTo)   params.date_to   = dateTo;
   const { data } = await api.get("/games", { params });
   return data;
 }
