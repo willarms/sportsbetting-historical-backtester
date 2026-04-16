@@ -159,5 +159,29 @@ tbody td { padding: 0.65rem 0.75rem; }
 .back-link:hover { text-decoration: underline; }
 .empty { color: #64748b; padding: 2rem 0; text-align: center; }
 td.no-odds { color: #3d4460; }
+
+/* Stats grid */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.75rem;
+}
+@media (max-width: 700px) {
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
+.stat-tile {
+  background: #0f1117;
+  border: 1px solid #2d3150;
+  border-radius: 6px;
+  padding: 0.85rem 1rem;
+}
+.stat-tile .stat-label {
+  font-size: 0.7rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.3rem;
+}
+.stat-tile .stat-value { font-size: 1.15rem; font-weight: 700; }
 .loading { color: #64748b; padding: 2rem 0; text-align: center; }
 .error-msg { color: #f87171; padding: 1rem; background: #450a0a; border-radius: 6px; margin-bottom: 1rem; }
