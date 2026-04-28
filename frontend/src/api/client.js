@@ -30,6 +30,16 @@ export async function fetchGames({ team, season, book, dateFrom, dateTo, page = 
   return data;
 }
 
+export async function runBacktest({ market, side, book, stake, team, season, dateFrom, dateTo } = {}) {
+  const params = { market, side, book, stake };
+  if (team)     params.team      = team;
+  if (season)   params.season    = season;
+  if (dateFrom) params.date_from = dateFrom;
+  if (dateTo)   params.date_to   = dateTo;
+  const { data } = await api.get("/backtest", { params });
+  return data;
+}
+
 export async function fetchGame(gameId) {
   const { data } = await api.get(`/games/${gameId}`);
   return data;

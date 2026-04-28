@@ -2,24 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchTeams, fetchSeasons, fetchBookmakers, fetchGames } from "../api/client.js";
 import { BOOK_LABELS, bookLabel } from "../utils/bookmakers.js";
-
-// ── Formatting helpers ──────────────────────────────────────────────────────
-
-function fmtOdds(price) {
-  if (price == null) return "–";
-  return price > 0 ? `+${price}` : `${price}`;
-}
-
-function fmtLine(line) {
-  if (line == null) return "–";
-  return line > 0 ? `+${line}` : `${line}`;
-}
-
-function fmtMargin(margin) {
-  if (margin == null) return "";
-  const abs = Math.abs(margin);
-  return abs % 1 === 0 ? abs.toFixed(0) : abs.toFixed(1);
-}
+import { fmtOdds, fmtLine, fmtMargin } from "../utils/formatting.js";
 
 // ── Cells for each betting market ───────────────────────────────────────────
 
