@@ -1,7 +1,3 @@
-"""
-enrich_db.py
-populates fields in database that couldn't be statically loaded from csvs
-"""
 import oracledb
 from datetime import timedelta
 
@@ -20,11 +16,11 @@ print("\n--- Calculating back-to-back flags ---")
 
 cur.execute("""
     SELECT g.gameID, g.game_date,
-           t1.team_name AS home_team,
-           t2.team_name AS away_team
-    FROM   Games g
-    JOIN   Teams t1 ON g.home_teamID = t1.teamID
-    JOIN   Teams t2 ON g.away_teamID = t2.teamID
+    t1.team_name AS home_team,
+    t2.team_name AS away_team
+    FROM Games g
+    JOIN Teams t1 ON g.home_teamID = t1.teamID
+    JOIN Teams t2 ON g.away_teamID = t2.teamID
     ORDER BY g.game_date
 """)
 games = cur.fetchall() 
@@ -48,7 +44,7 @@ cur.executemany(
     btb_updates
 )
 conn.commit()
-print(f"  Updated {len(btb_updates)} games with btb flags.")
+print(f"Updated {len(btb_updates)} games with btb flags.")
 
 
 # is_winner and is_push
@@ -57,16 +53,16 @@ print("\n--- Calculating is_winner / is_push ---")
 # Pull every outcome joined to its game result
 cur.execute("""
     SELECT mo.outcomeID,
-           mk.market_type,
-           mo.outcome_label,
-           mo.line_value,
-           g.home_score,
-           g.away_score,
-           g.total_score,
-           g.home_win
-    FROM   MarketOutcomes mo
-    JOIN   Markets mk ON mo.marketID = mk.marketID
-    JOIN   Games   g  ON mk.gameID   = g.gameID
+    mk.market_type,
+    mo.outcome_label,
+    mo.line_value,
+    g.home_score,
+    g.away_score,
+    g.total_score,
+    g.home_win
+    FROM MarketOutcomes mo
+    JOIN Markets mk ON mo.marketID = mk.marketID
+    JOIN Games g ON mk.gameID = g.gameID
 """)
 outcomes = cur.fetchall()
 
@@ -138,7 +134,7 @@ cur.executemany(
     outcome_updates
 )
 conn.commit()
-print(f"  Updated {len(outcome_updates)} market outcomes.")
+print(f"Updated {len(outcome_updates)} market outcomes.")
 
 cur.close()
 conn.close()
