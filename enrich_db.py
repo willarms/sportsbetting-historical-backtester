@@ -1,15 +1,6 @@
 """
 enrich_db.py
-Run once to populate fields that couldn't be loaded from the raw CSVs:
-
-  Part A — Games.home_btb / Games.away_btb
-            1 if that team played the night before, else 0.
-
-  Part B — MarketOutcomes.is_winner / MarketOutcomes.is_push
-            Derived from actual game results already in the DB.
-
-Usage:
-    python3.11 enrich_db.py
+populates fields in database that couldn't be statically loaded from csvs
 """
 import oracledb
 from datetime import timedelta
@@ -24,13 +15,9 @@ cur  = conn.cursor()
 
 print("Connected to Oracle", conn.version)
 
+# Back to back flag
+print("\n--- Calculating back-to-back flags ---")
 
-# ═════════════════════════════════════════════════════════════════════════════
-# Part A: Back-to-back flags
-# ═════════════════════════════════════════════════════════════════════════════
-print("\n--- Part A: Calculating back-to-back flags ---")
-
-# Pull all games with team names
 cur.execute("""
     SELECT g.gameID, g.game_date,
            t1.team_name AS home_team,
@@ -40,9 +27,9 @@ cur.execute("""
     JOIN   Teams t2 ON g.away_teamID = t2.teamID
     ORDER BY g.game_date
 """)
-games = cur.fetchall()  # list of (gameID, game_date, home_team, away_team)
+games = cur.fetchall() 
 
-# Build a set of (team, date) pairs so we can do O(1) lookups
+# (team, date) pairs
 played_on = set()
 for game_id, game_date, home_team, away_team in games:
     played_on.add((home_team, game_date))
@@ -64,10 +51,8 @@ conn.commit()
 print(f"  Updated {len(btb_updates)} games with btb flags.")
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# Part B: is_winner / is_push on MarketOutcomes
-# ═════════════════════════════════════════════════════════════════════════════
-print("\n--- Part B: Calculating is_winner / is_push ---")
+# is_winner and is_push
+print("\n--- Calculating is_winner / is_push ---")
 
 # Pull every outcome joined to its game result
 cur.execute("""
@@ -87,12 +72,10 @@ outcomes = cur.fetchall()
 
 outcome_updates = []
 
-for outcome_id, market_type, outcome_label, line_value, \
-        home_score, away_score, total_score, home_win in outcomes:
-
+for outcome_id, market_type, outcome_label, line_value, home_score, away_score, total_score, home_win in outcomes:
     is_winner = None
     is_push   = None
-
+    
     if home_score is None or away_score is None or total_score is None:
         # Game result not available — leave NULL
         outcome_updates.append((None, None, outcome_id))
@@ -100,6 +83,7 @@ for outcome_id, market_type, outcome_label, line_value, \
 
     home_margin = home_score - away_score   # positive = home won
 
+    # moneyline
     if market_type == "h2h":
         if outcome_label == "HOME":
             is_winner = 1 if home_win == 1 else 0
@@ -107,6 +91,7 @@ for outcome_id, market_type, outcome_label, line_value, \
             is_winner = 1 if home_win == 0 else 0
         is_push = 0  # moneylines can't push
 
+    # spreads
     elif market_type == "spreads":
         if line_value is None:
             outcome_updates.append((None, None, outcome_id))
@@ -115,7 +100,6 @@ for outcome_id, market_type, outcome_label, line_value, \
             # Home covers if (home_margin + home_spread) > 0
             spread_margin = home_margin + float(line_value)
         else:  # AWAY
-            # Away line is the negative of home spread
             spread_margin = (-home_margin) + float(line_value)
 
         if spread_margin > 0:
@@ -125,6 +109,7 @@ for outcome_id, market_type, outcome_label, line_value, \
         else:
             is_winner, is_push = 0, 0
 
+    # totals
     elif market_type == "totals":
         if line_value is None:
             outcome_updates.append((None, None, outcome_id))
@@ -155,7 +140,6 @@ cur.executemany(
 conn.commit()
 print(f"  Updated {len(outcome_updates)} market outcomes.")
 
-# ── Done ──────────────────────────────────────────────────────────────────────
 cur.close()
 conn.close()
-print("\nDone. All enrichment complete.")
+print("\nDone. All complete.")
