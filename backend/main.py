@@ -1,10 +1,13 @@
 from contextlib import asynccontextmanager
 from typing import Optional
+import hashlib
 import math
 import numpy as np
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from sqlalchemy import text
 
 import data
 
@@ -20,9 +23,15 @@ app = FastAPI(title="Sports Betting Backtester API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
+
+
+# ── Password hashing ─────────────────────────────────────────────────────────
+
+def _hash_password(plain: str) -> str:
+    return hashlib.sha256(plain.encode()).hexdigest()
 
 
 # ── Odds math ────────────────────────────────────────────────────────────────
@@ -41,6 +50,44 @@ def _to_american(prob: float) -> int:
     if prob >= 0.5:
         return round(-(prob * 100) / (1 - prob))
     return round((1 - prob) * 100 / prob)
+
+
+def _devig_prob(game_odds, market: str, label: str) -> Optional[float]:
+    """
+    Calculate the devigged (fair) probability for one side of a market.
+
+    Uses all available books for the given (market, label) pair.
+    Devig method: for each book, sum the implied probs for both sides,
+    divide each side's implied prob by the total (remove the vig).
+    Average the devigged probs across books.
+
+    Returns None if insufficient data.
+    """
+    opposite = {"HOME": "AWAY", "AWAY": "HOME", "OVER": "UNDER", "UNDER": "OVER"}
+    opp_label = opposite.get(label)
+    if opp_label is None:
+        return None
+
+    mkt_rows = game_odds[game_odds["market_type"] == market]
+    side_rows = mkt_rows[mkt_rows["outcome_label"] == label]["price"].dropna()
+    opp_rows  = mkt_rows[mkt_rows["outcome_label"] == opp_label]["price"].dropna()
+
+    if side_rows.empty or opp_rows.empty:
+        return None
+
+    # Match up by position (books are in same order for both sides)
+    n = min(len(side_rows), len(opp_rows))
+    devigged_probs = []
+    for i in range(n):
+        p_side = _to_prob(float(side_rows.iloc[i]))
+        p_opp  = _to_prob(float(opp_rows.iloc[i]))
+        total  = p_side + p_opp
+        if total > 0:
+            devigged_probs.append(p_side / total)
+
+    if not devigged_probs:
+        return None
+    return sum(devigged_probs) / len(devigged_probs)
 
 
 # ── Line computation ─────────────────────────────────────────────────────────
@@ -88,9 +135,6 @@ def _compute_lines(game_odds, book: str, home_score: int, away_score: int, total
     spread_line = _line_val("spreads", "HOME")
     spread_covered, spread_margin = None, None
     if spread_line is not None:
-        # home covers if (actual margin + spread_line) > 0
-        # e.g. home +10.5, lost by 8  → -8 + 10.5 = +2.5 ✓
-        # e.g. home -3.5,  won by 2   →  2 + (-3.5) = -1.5 ✗
         spread_margin = round((home_score - away_score) + spread_line, 1)
         spread_covered = spread_margin > 0
 
@@ -100,7 +144,6 @@ def _compute_lines(game_odds, book: str, home_score: int, away_score: int, total
         total_margin = round(total_score - total_line, 1)
         went_over = total_margin > 0
 
-    # Label shown in UI
     if book == "consensus":
         book_label = "Consensus"
     else:
@@ -216,14 +259,17 @@ def get_game(game_id: str):
 
 @app.get("/api/backtest")
 def run_backtest(
-    market:    str           = Query(..., description="h2h, spreads, or totals"),
-    side:      str           = Query(..., description="HOME/AWAY or OVER/UNDER"),
-    book:      str           = Query("draftkings"),
-    stake:     float         = Query(100.0, gt=0),
-    team:      Optional[str] = Query(None),
-    season:    Optional[str] = Query(None),
-    date_from: Optional[str] = Query(None),
-    date_to:   Optional[str] = Query(None),
+    market:      str           = Query(..., description="h2h, spreads, or totals"),
+    side:        str           = Query(..., description="HOME/AWAY or OVER/UNDER"),
+    book:        str           = Query("draftkings"),
+    stake:       float         = Query(100.0, gt=0),
+    team:        Optional[str] = Query(None),
+    season:      Optional[str] = Query(None),
+    date_from:   Optional[str] = Query(None),
+    date_to:     Optional[str] = Query(None),
+    posEV_only:  bool          = Query(False, description="Only include bets where offered odds have positive expected value vs devigged consensus"),
+    fade_btbs:   bool          = Query(False, description="Skip bets where the relevant team played the night before"),
+    team_side:   Optional[str] = Query(None, description="When filtering by team: WIN (bet on that team) or LOSS (bet against them)"),
 ):
     from datetime import date as date_type
 
@@ -248,7 +294,30 @@ def run_backtest(
         if game_odds is None or game_odds.empty:
             continue
 
-        # Get lines (margins) via existing helper
+        # ── Resolve which side to bet ──────────────────────────────────────
+        # When team_side filter is active, determine the effective bet side
+        # for this game based on whether the filtered team is home or away.
+        effective_side = side
+        if team and team_side:
+            team_is_home = (row.home_team == team)
+            if team_side == "WIN":
+                effective_side = "HOME" if team_is_home else "AWAY"
+            else:  # LOSS — bet against the team
+                effective_side = "AWAY" if team_is_home else "HOME"
+
+        # ── B2B filter ────────────────────────────────────────────────────
+        if fade_btbs:
+            if team:
+                # Only check the filtered team's btb status
+                team_is_home = (row.home_team == team)
+                btb_flag = row.home_btb if team_is_home else row.away_btb
+            else:
+                # Check the side we're betting on
+                btb_flag = row.home_btb if effective_side == "HOME" else row.away_btb
+            if btb_flag == 1:
+                continue
+
+        # ── Get lines ─────────────────────────────────────────────────────
         lines = _compute_lines(
             game_odds, book,
             home_score=row.home_score, away_score=row.away_score,
@@ -257,7 +326,7 @@ def run_backtest(
         if lines is None:
             continue
 
-        # Resolve price for the requested side
+        # ── Book rows for price lookup ─────────────────────────────────────
         if book == "consensus":
             rows_for_book = game_odds
         else:
@@ -277,36 +346,49 @@ def run_backtest(
             return _to_american(subset.apply(_to_prob).mean())
 
         if market == "h2h":
-            price = lines["ml_home"] if side == "HOME" else lines["ml_away"]
+            price = lines["ml_home"] if effective_side == "HOME" else lines["ml_away"]
             line_val = None
         elif market == "spreads":
-            price = _price_for("spreads", side)
-            line_val = lines["spread_line"] if side == "HOME" else (
+            price = _price_for("spreads", effective_side)
+            line_val = lines["spread_line"] if effective_side == "HOME" else (
                 -lines["spread_line"] if lines["spread_line"] is not None else None
             )
         else:  # totals
-            price = _price_for("totals", side)
+            price = _price_for("totals", effective_side)
             line_val = lines["total_line"]
 
         if price is None:
             continue
 
-        # Determine result
+        # ── posEV filter ──────────────────────────────────────────────────
+        # Fair probability = devigged consensus across all books.
+        # We bet only when the offered price's implied prob < fair prob
+        # (i.e. the book is giving us better odds than the true probability).
+        if posEV_only:
+            fair_prob = _devig_prob(game_odds, market, effective_side)
+            if fair_prob is None:
+                continue
+            offered_prob = _to_prob(float(price))
+            if offered_prob >= fair_prob:
+                # Not posEV — skip this bet
+                continue
+
+        # ── Determine result ──────────────────────────────────────────────
         sm = lines.get("spread_margin")
         tm = lines.get("total_margin")
 
         if market == "h2h":
-            result = "win" if (side == "HOME") == bool(row.home_win) else "loss"
+            result = "win" if (effective_side == "HOME") == bool(row.home_win) else "loss"
         elif market == "spreads":
             if sm is None:
                 continue
-            result = "push" if sm == 0 else ("win" if (side == "HOME") == (sm > 0) else "loss")
+            result = "push" if sm == 0 else ("win" if (effective_side == "HOME") == (sm > 0) else "loss")
         else:  # totals
             if tm is None:
                 continue
-            result = "push" if tm == 0 else ("win" if (side == "OVER") == (tm > 0) else "loss")
+            result = "push" if tm == 0 else ("win" if (effective_side == "OVER") == (tm > 0) else "loss")
 
-        # Profit
+        # ── Profit ────────────────────────────────────────────────────────
         if result == "push":
             profit = 0.0
         elif result == "win":
@@ -314,7 +396,7 @@ def run_backtest(
         else:
             profit = -stake
 
-        profit    = round(profit, 2)
+        profit     = round(profit, 2)
         cumulative = round(cumulative + profit, 2)
 
         bets.append({
@@ -329,7 +411,7 @@ def run_backtest(
             "cumulative": cumulative,
         })
 
-    # Stats
+    # ── Stats ──────────────────────────────────────────────────────────────────
     n          = len(bets)
     wins       = sum(1 for b in bets if b["result"] == "win")
     losses     = sum(1 for b in bets if b["result"] == "loss")
@@ -357,6 +439,7 @@ def run_backtest(
         "params": {
             "market": market, "side": side, "book": book, "stake": stake,
             "team": team, "season": season, "date_from": date_from, "date_to": date_to,
+            "posEV_only": posEV_only, "fade_btbs": fade_btbs, "team_side": team_side,
         },
         "stats": {
             "total_bets":    n,
@@ -390,11 +473,149 @@ def get_game_odds(game_id: str):
     df = data.odds_df[mask].copy()
     df["game_date"] = df["game_date"].astype(str)
 
-    if not df.empty and "snapshot_time" in df.columns:
-        df = (
-            df.sort_values("snapshot_time")
-            .drop_duplicates(subset=["market_type", "outcome_label", "bookmaker"], keep="last")
-        )
-
+    # DB only stores opening lines — no snapshot dedup needed
     df = df.sort_values(["market_type", "bookmaker"]).replace({np.nan: None})
     return df.to_dict(orient="records")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# User CRUD endpoints
+# ══════════════════════════════════════════════════════════════════════════════
+
+class RegisterRequest(BaseModel):
+    email:    str
+    username: str
+    password: str
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class UpdateUserRequest(BaseModel):
+    email:    Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+
+@app.post("/api/users/register", status_code=201)
+def register_user(body: RegisterRequest):
+    hashed = _hash_password(body.password)
+    with data._ENGINE.begin() as conn:
+        # Check if username or email already taken
+        existing = conn.execute(
+            text("SELECT userID FROM Users WHERE username = :u OR email = :e"),
+            {"u": body.username, "e": body.email}
+        ).fetchone()
+        if existing:
+            raise HTTPException(status_code=409, detail="Username or email already in use")
+
+        # Get next userID
+        row = conn.execute(text("SELECT NVL(MAX(userID), 0) + 1 FROM Users")).fetchone()
+        new_id = int(row[0])
+
+        conn.execute(
+            text("""
+                INSERT INTO Users (userID, email, username, password_hash)
+                VALUES (:id, :email, :username, :pw)
+            """),
+            {"id": new_id, "email": body.email, "username": body.username, "pw": hashed}
+        )
+
+    return {"userID": new_id, "username": body.username}
+
+
+@app.post("/api/users/login")
+def login_user(body: LoginRequest):
+    hashed = _hash_password(body.password)
+    with data._ENGINE.connect() as conn:
+        row = conn.execute(
+            text("SELECT userID, username FROM Users WHERE username = :u AND password_hash = :pw"),
+            {"u": body.username, "pw": hashed}
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    return {"userID": int(row[0]), "username": row[1]}
+
+
+@app.get("/api/users/{user_id}")
+def get_user(user_id: int):
+    with data._ENGINE.connect() as conn:
+        row = conn.execute(
+            text("SELECT userID, email, username, created_at FROM Users WHERE userID = :id"),
+            {"id": user_id}
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {
+        "userID":     int(row[0]),
+        "email":      row[1],
+        "username":   row[2],
+        "created_at": str(row[3]) if row[3] else None,
+    }
+
+
+@app.put("/api/users/{user_id}")
+def update_user(user_id: int, body: UpdateUserRequest):
+    if not any([body.email, body.username, body.password]):
+        raise HTTPException(status_code=400, detail="Nothing to update")
+
+    with data._ENGINE.begin() as conn:
+        # Verify user exists
+        row = conn.execute(
+            text("SELECT userID FROM Users WHERE userID = :id"), {"id": user_id}
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        if body.email:
+            conn.execute(
+                text("UPDATE Users SET email = :v WHERE userID = :id"),
+                {"v": body.email, "id": user_id}
+            )
+        if body.username:
+            conn.execute(
+                text("UPDATE Users SET username = :v WHERE userID = :id"),
+                {"v": body.username, "id": user_id}
+            )
+        if body.password:
+            conn.execute(
+                text("UPDATE Users SET password_hash = :v WHERE userID = :id"),
+                {"v": _hash_password(body.password), "id": user_id}
+            )
+
+    return {"userID": user_id, "updated": True}
+
+
+@app.delete("/api/users/{user_id}", status_code=200)
+def delete_user(user_id: int):
+    with data._ENGINE.begin() as conn:
+        row = conn.execute(
+            text("SELECT userID FROM Users WHERE userID = :id"), {"id": user_id}
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Delete in reverse FK order: Bets → StrategyRuns → Strategies → Users
+        conn.execute(text("""
+            DELETE FROM Bets WHERE runID IN (
+                SELECT sr.runID FROM StrategyRuns sr
+                JOIN Strategies s ON sr.strategyID = s.strategyID
+                WHERE s.userID = :id
+            )
+        """), {"id": user_id})
+
+        conn.execute(text("""
+            DELETE FROM StrategyRuns WHERE strategyID IN (
+                SELECT strategyID FROM Strategies WHERE userID = :id
+            )
+        """), {"id": user_id})
+
+        conn.execute(
+            text("DELETE FROM Strategies WHERE userID = :id"), {"id": user_id}
+        )
+
+        conn.execute(
+            text("DELETE FROM Users WHERE userID = :id"), {"id": user_id}
+        )
+
+    return {"userID": user_id, "deleted": True}
