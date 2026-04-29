@@ -1,7 +1,7 @@
 import oracledb
 from datetime import timedelta
 
-# ── Connection ────────────────────────────────────────────────────────────────
+# connection
 _DB_USER     = "group10"
 _DB_PASSWORD = "group10"
 _DB_DSN      = "127.0.0.1:1521/xepdb1"
