@@ -1,6 +1,5 @@
 from contextlib import asynccontextmanager
 from typing import Optional
-import hashlib
 import math
 import numpy as np
 
@@ -10,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 import data
+from helpers import (hash_password, to_prob, to_american, devig_prob, compute_lines, enrich, strategy_row_to_dict)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -26,144 +26,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# simple password hash
-def _hash_password(plain: str) -> str:
-    return hashlib.sha256(plain.encode()).hexdigest()
-
-# math for calculating posEV
-
-# American odds to implied prob
-def _to_prob(american: float) -> float:
-    if american > 0:
-        return 100 / (american + 100)
-    return -american / (-american + 100)
-
-
-def _to_american(prob: float) -> int:
-    """Implied probability → American odds (rounded to nearest integer)."""
-    if prob <= 0 or prob >= 1:
-        return 0
-    if prob >= 0.5:
-        return round(-(prob * 100) / (1 - prob))
-    return round((1 - prob) * 100 / prob)
-
-# Calculates 'fair' probability for a market --> gets rid of book vig
-def _devig_prob(game_odds, market: str, label: str) -> Optional[float]:
-    opposite = {"HOME": "AWAY", "AWAY": "HOME", "OVER": "UNDER", "UNDER": "OVER"}
-    opp_label = opposite.get(label)
-    
-    # make sure opposite line exists
-    if opp_label is None:
-        return None
-
-    mkt_rows = game_odds[game_odds["market_type"] == market]
-    side_rows = mkt_rows[mkt_rows["outcome_label"] == label]["price"].dropna()
-    opp_rows  = mkt_rows[mkt_rows["outcome_label"] == opp_label]["price"].dropna()
-
-    if side_rows.empty or opp_rows.empty:
-        return None
-
-    # Match book
-    n = min(len(side_rows), len(opp_rows))
-    devigged_probs = []
-    for i in range(n):
-        p_side = _to_prob(float(side_rows.iloc[i]))
-        p_opp  = _to_prob(float(opp_rows.iloc[i]))
-        total  = p_side + p_opp
-        if total > 0:
-            devigged_probs.append(p_side / total)
-
-    if not devigged_probs:
-        return None
-    return sum(devigged_probs) / len(devigged_probs)
-
-
-# Compute betting lines for a game --> given all opening line rows for a game, return dictionary of lines
-def _compute_lines(game_odds, book: str, home_score: int, away_score: int, total_score: int, home_win: int):
-    if game_odds is None or (hasattr(game_odds, 'empty') and game_odds.empty):
-        return None
-
-    if book == "consensus":
-        rows = game_odds
-    else:
-        rows = game_odds[game_odds["bookmaker"] == book]
-        if rows.empty:
-            return None
-
-    def _price(mkt, label):
-        subset = rows[(rows["market_type"] == mkt) & (rows["outcome_label"] == label)]["price"].dropna()
-        if subset.empty:
-            return None
-        # Check if consesus (if so use average)
-        if book != "consensus" or len(subset) == 1:
-            return int(subset.iloc[0])
-        avg_prob = subset.apply(_to_prob).mean()
-        return _to_american(avg_prob)
-
-    def _line_val(mkt, label):
-        subset = rows[(rows["market_type"] == mkt) & (rows["outcome_label"] == label)]["line_value"].dropna()
-        if subset.empty:
-            return None
-        # For consensus, average the line values across books
-        val = subset.mean() if book == "consensus" else subset.iloc[0]
-        # NaN guard
-        return None if val != val else round(float(val), 1)
-
-    ml_home = _price("h2h", "HOME")
-    ml_away = _price("h2h", "AWAY")
-
-    spread_line = _line_val("spreads", "HOME")
-    spread_covered, spread_margin = None, None
-    if spread_line is not None:
-        spread_margin = round((home_score - away_score) + spread_line, 1)
-        spread_covered = spread_margin > 0
-
-    total_line = _line_val("totals", "OVER")
-    went_over, total_margin = None, None
-    if total_line is not None:
-        total_margin = round(total_score - total_line, 1)
-        went_over = total_margin > 0
-
-    if book == "consensus":
-        book_label = "Consensus"
-    else:
-        book_label = book
-
-    return {
-        "bookmaker":           book_label,
-        "ml_home":             ml_home,
-        "ml_away":             ml_away,
-        "ml_home_hit":         bool(home_win),
-        "spread_line":         spread_line,
-        "spread_home_covered": spread_covered,
-        "spread_margin":       spread_margin,
-        "total_line":          total_line,
-        "total_went_over":     went_over,
-        "total_margin":        total_margin,
-    }
-
-# Add computed game lines to game record in dictionary
-def _enrich(record: dict, book: str) -> dict:
-    key = (record["home_team"], record["away_team"], record["_game_date_obj"])
-    game_odds = data.odds_index.get(key)
-    record["lines"] = _compute_lines(
-        game_odds, book,
-        home_score=record["home_score"],
-        away_score=record["away_score"],
-        total_score=record["total_score"],
-        home_win=record["home_win"],
-    )
-    # don't need to return this
-    del record["_game_date_obj"]
-    return record
-
-
-# API Routes
-
-@app.get("/api/health")
-def health():
-    return {"status": "ok"}
-
 # there are non nba teams in the dataset (ex: all star weekend teams) that we don't care about betting on or offering
 NBA_TEAMS = {
     "Atlanta Hawks", "Boston Celtics", "Brooklyn Nets", "Charlotte Hornets",
@@ -175,6 +37,12 @@ NBA_TEAMS = {
     "Portland Trail Blazers", "Sacramento Kings", "San Antonio Spurs", "Toronto Raptors",
     "Utah Jazz", "Washington Wizards",
 }
+
+# API Routes
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok"}
 
 @app.get("/api/teams")
 def get_teams():
@@ -224,7 +92,7 @@ def get_games(
         r["_game_date_obj"] = r["game_date"]   # stash date object before stringifying
         r["game_date"] = str(r["game_date"])
 
-    rows = [_enrich(r, book) for r in rows]
+    rows = [enrich(r, book) for r in rows]
 
     return {
         "total":     total,
@@ -242,7 +110,7 @@ def get_game(game_id: str):
     record = row.iloc[0].to_dict()
     record["_game_date_obj"] = record["game_date"]
     record["game_date"] = str(record["game_date"])
-    return _enrich(record, "consensus")
+    return enrich(record, "consensus")
 
 @app.get("/api/backtest")
 def run_backtest(
@@ -304,7 +172,7 @@ def run_backtest(
                 continue
 
         # get the lines using the compute lines helper function
-        lines = _compute_lines(
+        lines = compute_lines(
             game_odds, book,
             home_score=row.home_score, away_score=row.away_score,
             total_score=row.total_score, home_win=row.home_win,
@@ -329,7 +197,7 @@ def run_backtest(
                 return None
             if book != "consensus" or len(subset) == 1:
                 return int(subset.iloc[0])
-            return _to_american(subset.apply(_to_prob).mean())
+            return to_american(subset.apply(to_prob).mean())
 
         if market == "h2h":
             price = lines["ml_home"] if effective_side == "HOME" else lines["ml_away"]
@@ -348,10 +216,10 @@ def run_backtest(
 
         # posEV filter
         if posEV_only:
-            fair_prob = _devig_prob(game_odds, market, effective_side)
+            fair_prob = devig_prob(game_odds, market, effective_side)
             if fair_prob is None:
                 continue
-            offered_prob = _to_prob(float(price))
+            offered_prob = to_prob(float(price))
             if offered_prob >= fair_prob:
                 # Not posEV — skip it
                 continue
@@ -478,7 +346,7 @@ def register_user(body: RegisterRequest):
     username = body.username.strip()
     if not email or not username:
         raise HTTPException(status_code=400, detail="Email and username cannot be empty")
-    hashed = _hash_password(body.password)
+    hashed = hash_password(body.password)
     with data._ENGINE.begin() as conn:
         # Check if username or email already taken
         existing = conn.execute(
@@ -508,7 +376,7 @@ def login_user(body: LoginRequest):
     ident = body.username.strip()
     if not ident:
         raise HTTPException(status_code=400, detail="Username or email cannot be empty")
-    hashed = _hash_password(body.password)
+    hashed = hash_password(body.password)
     with data._ENGINE.connect() as conn:
         row = conn.execute(
             text(
@@ -520,9 +388,9 @@ def login_user(body: LoginRequest):
     if not row:
         raise HTTPException(status_code=401, detail="Invalid username or password")
     return {
-        "userID":   int(row[0]),
+        "userID": int(row[0]),
         "username": row[1],
-        "email":    row[2],
+        "email": row[2],
     }
 
 @app.get("/api/users/{user_id}")
@@ -535,7 +403,143 @@ def get_user(user_id: int):
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
     return {
-        "userID":   int(row[0]),
-        "email":    row[1],
+        "userID": int(row[0]),
+        "email": row[1],
         "username": row[2],
     }
+
+# Strategy endpoints
+
+class CreateStrategyRequest(BaseModel):
+    userID: int
+    strategy_name: str
+    description:Optional[str] = None
+    market_type:str
+    side: str
+    book: str
+    stake: float
+    team_filter: Optional[str] = None
+    team_side: Optional[str] = None
+    season_filter: Optional[str] = None
+    posEV_only: bool = False
+    fade_btbs: bool = False
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+
+@app.post("/api/strategies", status_code=201)
+def create_strategy(body: CreateStrategyRequest):
+    with data._ENGINE.begin() as conn:
+        # Look up bookID (if consensus, value will be NULL)
+        if body.book == "consensus":
+            book_id = None
+        else:
+            book_row = conn.execute(
+                text("SELECT bookID FROM Books WHERE book_name = :b"),
+                {"b": body.book}
+            ).fetchone()
+            if not book_row:
+                raise HTTPException(status_code=400, detail=f"Unknown bookmaker: {body.book}")
+            book_id = int(book_row[0])
+
+        # Next strategyID
+        row = conn.execute(text("SELECT NVL(MAX(strategyID), 0) + 1 FROM Strategies")).fetchone()
+        new_id = int(row[0])
+
+        conn.execute(text("""
+            INSERT INTO Strategies (
+            strategyID, userID, strategy_name, description,
+            market_type, side, bookID, stake,
+            team_filter, team_side, season_filter,
+            posEV_only, fade_btbs, date_from, date_to
+            ) VALUES (
+            :sid, :uid, :name, :desc,
+            :mkt, :side, :bid, :stake,
+            :team, :tside, :season,
+            :posev, :fadebtb,
+            TO_DATE(:dfrom, 'YYYY-MM-DD'), TO_DATE(:dto, 'YYYY-MM-DD')
+            )
+        """), {
+            "sid": new_id,
+            "uid":body.userID,
+            "name": body.strategy_name,
+            "desc":body.description,
+            "mkt": body.market_type,
+            "side": body.side,
+            "bid": book_id,
+            "stake": body.stake,
+            "team": body.team_filter,
+            "tside": body.team_side,
+            "season": body.season_filter,
+            "posev": 1 if body.posEV_only else 0,
+            "fadebtb": 1 if body.fade_btbs else 0,
+            "dfrom": body.date_from,
+            "dto": body.date_to,
+        })
+
+        # Fetch back the inserted row to return it
+        saved = conn.execute(text("""
+            SELECT s.strategyID, s.userID, s.strategy_name, s.description,
+            s.market_type, s.side, b.book_name, s.stake,
+            s.team_filter, s.team_side, s.season_filter,
+            s.posEV_only, s.fade_btbs, s.date_from, s.date_to, s.created_at
+            FROM Strategies s
+            LEFT JOIN Books b ON s.bookID = b.bookID
+            WHERE s.strategyID = :id
+        """), {"id": new_id}).fetchone()
+
+    return strategy_row_to_dict(saved)
+
+@app.get("/api/users/{user_id}/strategies")
+def get_user_strategies(user_id: int):
+    with data._ENGINE.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT s.strategyID, s.userID, s.strategy_name, s.description,
+    s.market_type, s.side, b.book_name, s.stake,
+    s.team_filter, s.team_side, s.season_filter,
+            s.posEV_only, s.fade_btbs, s.date_from, s.date_to, s.created_at
+            FROM Strategies s
+            LEFT JOIN Books b ON s.bookID = b.bookID
+            WHERE s.userID = :uid
+            ORDER BY s.created_at DESC
+        """), {"uid": user_id}).fetchall()
+    return [strategy_row_to_dict(r) for r in rows]
+
+@app.post("/api/strategies/{strategy_id}/run", status_code=201)
+def log_strategy_run(strategy_id: int):
+    with data._ENGINE.begin() as conn:
+        if not conn.execute(
+            text("SELECT strategyID FROM Strategies WHERE strategyID = :id"),
+            {"id": strategy_id}
+        ).fetchone():
+            raise HTTPException(status_code=404, detail="Strategy not found")
+
+        run_id_row = conn.execute(text("SELECT NVL(MAX(runID), 0) + 1 FROM StrategyRuns")).fetchone()
+        run_id = int(run_id_row[0])
+
+        conn.execute(text("""
+        INSERT INTO StrategyRuns (runID, strategyID, status)
+        VALUES (:rid, :sid, 'COMPLETE')
+        """), {"rid": run_id, "sid": strategy_id})
+
+    return {"runID": run_id, "strategyID": strategy_id, "status": "COMPLETE"}
+
+@app.delete("/api/strategies/{strategy_id}", status_code=200)
+def delete_strategy(strategy_id: int):
+    with data._ENGINE.begin() as conn:
+        row = conn.execute(
+            text("SELECT strategyID FROM Strategies WHERE strategyID = :id"),
+            {"id": strategy_id}
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Strategy not found")
+
+        # FK order: StrategyRuns first, then Strategies
+        conn.execute(
+            text("DELETE FROM StrategyRuns WHERE strategyID = :id"),
+            {"id": strategy_id}
+        )
+        conn.execute(
+            text("DELETE FROM Strategies WHERE strategyID = :id"),
+            {"id": strategy_id}
+        )
+    return {"strategyID": strategy_id, "deleted": True}
