@@ -4,6 +4,45 @@ import axios from "axios";
 // In production, Apache proxies them instead. The frontend code never changes.
 const api = axios.create({ baseURL: "/api" });
 
+/** Extract a readable message from a failed axios / FastAPI response. */
+export function apiErrorMessage(err) {
+  if (!axios.isAxiosError(err)) {
+    return err instanceof Error ? err.message : "Something went wrong";
+  }
+  const detail = err.response?.data?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((d) => (typeof d?.msg === "string" ? d.msg : JSON.stringify(d)))
+      .join(" ")
+      .trim();
+    if (msgs) return msgs;
+  }
+  const status = err.response?.status;
+  if (status === 409) return "That username or email is already taken.";
+  if (status === 401) return "Invalid username or password.";
+  if (status) return `Request failed (${status}).`;
+  return err.message || "Something went wrong";
+}
+
+export async function registerUser({ email, username, password }) {
+  const { data } = await api.post("/users/register", {
+    email: email.trim(),
+    username: username.trim(),
+    password,
+  });
+  return data;
+}
+
+/** `username` field may hold either a username or the account email — backend resolves both. */
+export async function loginUser({ identifier, password }) {
+  const { data } = await api.post("/users/login", {
+    username: identifier.trim(),
+    password,
+  });
+  return data;
+}
+
 export async function fetchTeams() {
   const { data } = await api.get("/teams");
   return data;
@@ -47,5 +86,26 @@ export async function fetchGame(gameId) {
 
 export async function fetchGameOdds(gameId) {
   const { data } = await api.get(`/games/${gameId}/odds`);
+  return data;
+}
+
+/** @param {object} body — matches CreateStrategyRequest in backend/main.py */
+export async function createStrategy(body) {
+  const { data } = await api.post("/strategies", body);
+  return data;
+}
+
+export async function fetchUserStrategies(userId) {
+  const { data } = await api.get(`/users/${userId}/strategies`);
+  return data;
+}
+
+export async function deleteStrategy(strategyId) {
+  const { data } = await api.delete(`/strategies/${strategyId}`);
+  return data;
+}
+
+export async function logStrategyRun(strategyId) {
+  const { data } = await api.post(`/strategies/${strategyId}/run`);
   return data;
 }

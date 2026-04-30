@@ -29,12 +29,68 @@ const DEFAULT_FORM = {
 
 // ── Stat tile ────────────────────────────────────────────────────────────────
 
-function StatTile({ label, value, color }) {
+function StatTile({ label, value, tone, color }) {
+  const cls = "stat-tile" + (tone === "positive" ? " positive" : tone === "negative" ? " negative" : "");
   return (
-    <div className="stat-tile">
+    <div className={cls}>
       <div className="stat-label">{label}</div>
       <div className="stat-value" style={color ? { color } : undefined}>{value}</div>
     </div>
+  );
+}
+
+// ── P&L chart helpers ────────────────────────────────────────────────────────
+
+const COLOR_GREEN = "#10b981";
+const COLOR_RED   = "#ef4444";
+
+/**
+ * Returns the y=0 crossover as a fraction of the chart height (0..1), so a
+ * vertical SVG gradient can hard-switch from green (above zero) to red
+ * (below zero) at the right place.
+ */
+function pnlGradientOffset(data) {
+  const max = Math.max(...data.map(d => d.cumulative));
+  const min = Math.min(...data.map(d => d.cumulative));
+  if (max <= 0) return 0;     // entirely in the red
+  if (min >= 0) return 1;     // entirely in the green
+  return max / (max - min);
+}
+
+/** Tooltip whose value text is green/red depending on the hovered point. */
+function PnlTooltip({ active, payload }) {
+  if (!active || !payload?.length) return null;
+  const { cumulative, date, n } = payload[0].payload;
+  const positive = cumulative >= 0;
+  return (
+    <div
+      style={{
+        background: "#161c27",
+        border: "1px solid rgba(255,255,255,0.12)",
+        borderRadius: 6,
+        padding: "0.5rem 0.7rem",
+        fontSize: 12,
+        boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+      }}
+    >
+      <div style={{ color: "#a3acc0", marginBottom: 2 }}>{date ?? `Bet ${n}`}</div>
+      <div style={{ color: positive ? COLOR_GREEN : COLOR_RED, fontWeight: 600 }}>
+        Cumulative P&amp;L: ${cumulative.toFixed(2)}
+      </div>
+    </div>
+  );
+}
+
+/** Cursor dot whose color matches the sign of the hovered cumulative. */
+function PnlActiveDot(props) {
+  const { cx, cy, payload } = props;
+  if (cx == null || cy == null) return null;
+  const color = payload.cumulative >= 0 ? COLOR_GREEN : COLOR_RED;
+  return (
+    <g>
+      <circle cx={cx} cy={cy} r={5}   fill={color} fillOpacity={0.18} />
+      <circle cx={cx} cy={cy} r={3.5} fill={color} stroke="#0c1119" strokeWidth={1.5} />
+    </g>
   );
 }
 
@@ -117,10 +173,22 @@ export default function BacktestPage() {
   const s = result?.stats;
   const bets = result?.bets ?? [];
 
-  // Chart data — one point per bet
-  const chartData = bets.map((b, i) => ({
+  // Chart data: one point per bet, downsampled when there are a lot of bets so
+  // the line reads as a clean trend instead of 2,500 single-bet wiggles.
+  // Cumulative is preserved exactly at every sampled point, so accuracy is
+  // unchanged; only visual density goes down.
+  const CHART_MAX_POINTS = 300;
+  const fullSeries = bets.map((b, i) => ({
     n: i + 1, cumulative: b.cumulative, date: b.game_date,
   }));
+  const chartData = (() => {
+    if (fullSeries.length <= CHART_MAX_POINTS) return fullSeries;
+    const step = Math.ceil(fullSeries.length / CHART_MAX_POINTS);
+    const sampled = fullSeries.filter((_, i) => i % step === 0);
+    const last = fullSeries[fullSeries.length - 1];
+    if (sampled[sampled.length - 1].n !== last.n) sampled.push(last);
+    return sampled;
+  })();
 
   // Paginated bet history
   const histTotal = bets.length;
@@ -129,7 +197,10 @@ export default function BacktestPage() {
 
   return (
     <>
-      <h1 className="page-title">Backtest a Strategy</h1>
+      <div className="page-hero">
+        <h1>Backtest a Strategy</h1>
+        <p>See how a flat-stake betting strategy would have performed against historical NBA closing lines. Filter by team, season, or date range, and save anything worth revisiting.</p>
+      </div>
 
       {/* ── Strategy form ── */}
       <div className="card" style={{ marginBottom: "1.25rem" }}>
@@ -168,7 +239,6 @@ export default function BacktestPage() {
             <input
               type="number" name="stake" value={form.stake} min="1" step="1"
               onChange={handleField}
-              style={{ width: "80px" }}
             />
           </div>
 
@@ -198,26 +268,36 @@ export default function BacktestPage() {
             <input type="date" name="dateTo" value={form.dateTo} onChange={handleField} />
           </div>
 
-          <div className="filter-group" style={{ justifyContent: "flex-end" }}>
-            <div style={{ display: "flex", gap: "0.5rem" }}>
-              <button type="submit" className="btn btn-primary" disabled={loading}>
-                {loading ? "Running…" : "Run Backtest"}
+          <div className="filter-actions">
+            <button type="submit" className="btn btn-primary" disabled={loading}>
+              {loading ? "Running…" : "Run Backtest"}
+            </button>
+            {result && !saved && (
+              <button type="button" className="btn btn-ghost" onClick={handleSave}>
+                Save Strategy
               </button>
-              {result && !saved && (
-                <button type="button" className="btn btn-ghost" onClick={handleSave}>
-                  Save Strategy
-                </button>
-              )}
-              {saved && (
-                <span style={{ alignSelf: "center", color: "var(--green)", fontSize: "0.85rem" }}>
-                  ✓ Saved
-                </span>
-              )}
-            </div>
+            )}
+            {saved && (
+              <span style={{ color: "var(--green)", fontSize: "0.85rem", fontWeight: 500 }}>
+                ✓ Saved
+              </span>
+            )}
           </div>
 
         </form>
       </div>
+
+      {loading && (
+        <div
+          className="backtest-loading"
+          role="status"
+          aria-live="polite"
+          aria-busy="true"
+          aria-label="Running backtest"
+        >
+          <div className="backtest-spinner" />
+        </div>
+      )}
 
       {error && <div className="error-msg">{error}</div>}
 
@@ -238,21 +318,29 @@ export default function BacktestPage() {
               <StatTile
                 label="Net Profit"
                 value={fmtMoney(s.net_profit)}
+                tone={s.net_profit >= 0 ? "positive" : "negative"}
                 color={s.net_profit >= 0 ? "var(--green)" : "var(--red)"}
               />
               <StatTile
                 label="ROI"
                 value={fmtPercent(s.roi)}
+                tone={s.roi >= 0 ? "positive" : "negative"}
                 color={s.roi >= 0 ? "var(--green)" : "var(--red)"}
               />
-              <StatTile label="Win Rate"    value={fmtPercent(s.win_rate)} />
-              <StatTile label="EV / Bet"    value={fmtMoney(s.ev_per_bet)}
-                color={s.ev_per_bet >= 0 ? "var(--green)" : "var(--red)"} />
-              <StatTile label="Max Drawdown" value={fmtMoney(s.max_drawdown)}
-                color={s.max_drawdown < 0 ? "var(--red)" : undefined} />
-              <StatTile label="Volatility"  value={`$${s.volatility.toFixed(2)}`} />
+              <StatTile label="Win Rate" value={fmtPercent(s.win_rate)} />
+              <StatTile
+                label="EV / Bet"
+                value={fmtMoney(s.ev_per_bet)}
+                color={s.ev_per_bet >= 0 ? "var(--green)" : "var(--red)"}
+              />
+              <StatTile
+                label="Max Drawdown"
+                value={fmtMoney(s.max_drawdown)}
+                color={s.max_drawdown < 0 ? "var(--red)" : undefined}
+              />
+              <StatTile label="Volatility" value={`$${s.volatility.toFixed(2)}`} />
             </div>
-            <p style={{ marginTop: "0.75rem", fontSize: "0.75rem", color: "#64748b" }}>
+            <p style={{ marginTop: "0.75rem", fontSize: "0.75rem", color: "var(--text-3)" }}>
               {s.wins}W · {s.losses}L · {s.pushes} push{s.pushes !== 1 ? "es" : ""}
             </p>
           </div>
@@ -260,35 +348,41 @@ export default function BacktestPage() {
           {/* ── P&L Chart ── */}
           {bets.length > 0 && (
             <div className="card" style={{ marginBottom: "1.25rem" }}>
-              <p className="market-title" style={{ marginBottom: "0.75rem" }}>Cumulative P&amp;L</p>
+              <p className="card-title">Cumulative P&amp;L</p>
               <ResponsiveContainer width="100%" height={260}>
                 <LineChart data={chartData} margin={{ top: 8, right: 16, left: 0, bottom: 16 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#2d3150" />
+                  <defs>
+                    <linearGradient id="pnl-split" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset={pnlGradientOffset(chartData)} stopColor={COLOR_GREEN} />
+                      <stop offset={pnlGradientOffset(chartData)} stopColor={COLOR_RED}   />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                   <XAxis
                     dataKey="n"
-                    tick={{ fill: "#64748b", fontSize: 11 }}
+                    tick={{ fill: "#6b7488", fontSize: 11 }}
                     tickLine={false}
-                    label={{ value: "Bet #", position: "insideBottom", offset: -8, fill: "#64748b", fontSize: 11 }}
+                    axisLine={{ stroke: "rgba(255,255,255,0.08)" }}
+                    label={{ value: "Bet #", position: "insideBottom", offset: -8, fill: "#6b7488", fontSize: 11 }}
                   />
                   <YAxis
-                    tick={{ fill: "#64748b", fontSize: 11 }}
+                    tick={{ fill: "#6b7488", fontSize: 11 }}
                     tickLine={false}
+                    axisLine={{ stroke: "rgba(255,255,255,0.08)" }}
                     tickFormatter={v => `$${v}`}
                     width={70}
                   />
-                  <Tooltip
-                    contentStyle={{ background: "#1a1d2e", border: "1px solid #2d3150", borderRadius: 6, fontSize: 12 }}
-                    labelStyle={{ color: "#94a3b8" }}
-                    formatter={v => [`$${v.toFixed(2)}`, "Cumulative P&L"]}
-                    labelFormatter={(n, payload) => payload?.[0]?.payload?.date ?? `Bet ${n}`}
-                  />
-                  <ReferenceLine y={0} stroke="#3d4460" strokeDasharray="4 4" />
+                  <Tooltip content={<PnlTooltip />} cursor={{ stroke: "rgba(255,255,255,0.18)", strokeWidth: 1 }} />
+                  <ReferenceLine y={0} stroke="#4a5163" strokeDasharray="4 4" />
                   <Line
-                    type="monotone"
+                    type="natural"
                     dataKey="cumulative"
-                    stroke={s.net_profit >= 0 ? "var(--green)" : "var(--red)"}
+                    stroke="url(#pnl-split)"
                     dot={false}
+                    activeDot={<PnlActiveDot />}
                     strokeWidth={2}
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
                     isAnimationActive={false}
                   />
                 </LineChart>
@@ -298,12 +392,10 @@ export default function BacktestPage() {
 
           {/* ── Bet history ── */}
           <div className="card">
-            <p className="market-title" style={{ marginBottom: "0.75rem" }}>
-              Bet History ({histTotal.toLocaleString()} bets)
-            </p>
+            <p className="card-title">Bet History · {histTotal.toLocaleString()} bets</p>
 
             {bets.length === 0 ? (
-              <p className="empty">No bets matched — try different filters or a different bookmaker.</p>
+              <p className="empty">No bets matched. Try different filters or a different bookmaker.</p>
             ) : (
               <div className="table-wrap">
                 <table>
@@ -330,7 +422,7 @@ export default function BacktestPage() {
                         <td>
                           {b.result === "win"  && <span className="badge badge-win">Win</span>}
                           {b.result === "loss" && <span className="badge badge-loss">Loss</span>}
-                          {b.result === "push" && <span className="badge" style={{ background:"#1e2235", color:"#94a3b8" }}>Push</span>}
+                          {b.result === "push" && <span className="badge badge-push">Push</span>}
                         </td>
                         <td style={{ color: b.profit >= 0 ? "var(--green)" : "var(--red)", fontWeight: 600 }}>
                           {fmtMoney(b.profit)}

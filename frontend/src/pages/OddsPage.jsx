@@ -51,6 +51,7 @@ export default function OddsPage() {
     ...Object.keys(byMarket).filter((m) => !marketOrder.includes(m)),
   ];
 
+  const homeWon = game.home_win;
   return (
     <>
       <Link to="/" className="back-link">← Back to games</Link>
@@ -58,15 +59,15 @@ export default function OddsPage() {
       {/* Game header */}
       <div className="card game-header">
         <span className="team-name">{game.home_team}</span>
-        <span className="score">{game.home_score}</span>
+        <span className={"score" + (homeWon ? " win" : "")}>{game.home_score}</span>
         <span className="at">vs</span>
-        <span className="score">{game.away_score}</span>
+        <span className={"score" + (!homeWon ? " win" : "")}>{game.away_score}</span>
         <span className="team-name">{game.away_team}</span>
-        <span style={{ marginLeft: "auto", color: "#64748b", fontSize: "0.85rem" }}>
+        <span style={{ marginLeft: "auto", color: "var(--text-3)", fontSize: "0.85rem", display: "inline-flex", alignItems: "center", gap: "0.5rem" }}>
           {game.game_date}
-          {game.home_win
-            ? <span className="badge badge-win" style={{ marginLeft: "0.5rem" }}>Home W</span>
-            : <span className="badge badge-loss" style={{ marginLeft: "0.5rem" }}>Away W</span>}
+          {homeWon
+            ? <span className="badge badge-win">Home W</span>
+            : <span className="badge badge-loss">Away W</span>}
         </span>
       </div>
 
@@ -92,7 +93,7 @@ export default function OddsPage() {
                       <td>{bookLabel(row.bookmaker)}</td>
                       <td>{row.outcome_label}</td>
                       <td>{row.line_value ?? "–"}</td>
-                      <td style={{ fontWeight: 600, color: row.price > 0 ? "#4ade80" : "#f87171" }}>
+                      <td style={{ fontWeight: 600, color: row.price > 0 ? "var(--green)" : "var(--red)" }}>
                         {formatOdds(row.price)}
                       </td>
                     </tr>
