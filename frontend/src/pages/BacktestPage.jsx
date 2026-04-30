@@ -5,10 +5,14 @@ import {
   Tooltip, ReferenceLine, ResponsiveContainer,
 } from "recharts";
 
-import { runBacktest, fetchTeams, fetchSeasons, fetchBookmakers } from "../api/client.js";
-import { bookLabel, BOOK_LABELS }  from "../utils/bookmakers.js";
+import {
+  runBacktest, fetchTeams, fetchSeasons, fetchBookmakers,
+  createStrategy, logStrategyRun, apiErrorMessage,
+} from "../api/client.js";
+import { bookLabel } from "../utils/bookmakers.js";
 import { fmtOdds, fmtLine, fmtMoney, fmtPercent } from "../utils/formatting.js";
-import { addStrategy } from "../utils/strategies.js";
+import { buildCreateStrategyBody, strategyLabel } from "../utils/strategies.js";
+import { loadUser } from "../utils/auth.js";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -25,6 +29,7 @@ const HIST_PAGE_SIZE = 50;
 const DEFAULT_FORM = {
   market: "h2h", side: "HOME", book: "draftkings",
   stake: 100, team: "", season: "", dateFrom: "", dateTo: "",
+  posEV_only: false, fade_btbs: false,
 };
 
 // ── Stat tile ────────────────────────────────────────────────────────────────
@@ -112,6 +117,8 @@ export default function BacktestPage() {
       season:   p.season   ?? "",
       dateFrom: p.date_from ?? "",
       dateTo:   p.date_to   ?? "",
+      posEV_only: p.posEV_only === "true",
+      fade_btbs:  p.fade_btbs === "true",
     };
   });
 
@@ -119,7 +126,11 @@ export default function BacktestPage() {
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState(null);
   const [histPage, setHistPage] = useState(1);
-  const [saved, setSaved]       = useState(false);
+  const [saved, setSaved]         = useState(false);
+  const [saveError, setSaveError] = useState(null);
+  const [saveSubmitting, setSaveSubmitting] = useState(false);
+  const [strategyNameInput, setStrategyNameInput] = useState("");
+  const [saveModalOpen, setSaveModalOpen] = useState(false);
 
   const [teams, setTeams]         = useState([]);
   const [seasons, setSeasons]     = useState([]);
@@ -144,8 +155,13 @@ export default function BacktestPage() {
   }
 
   function handleField(e) {
-    const { name, value } = e.target;
-    setForm(f => ({ ...f, [name]: name === "stake" ? Number(value) : value }));
+    const t = e.target;
+    const { name } = t;
+    const raw =
+      t.type === "checkbox" ? t.checked
+        : name === "stake" ? Number(t.value)
+          : t.value;
+    setForm(f => ({ ...f, [name]: raw }));
   }
 
   function handleRun(e) {
@@ -154,21 +170,72 @@ export default function BacktestPage() {
     setError(null);
     setResult(null);
     setSaved(false);
+    setSaveError(null);
+    setStrategyNameInput("");
+    setSaveModalOpen(false);
     setHistPage(1);
     runBacktest({
       market: form.market, side: form.side, book: form.book, stake: form.stake,
       team: form.team || undefined, season: form.season || undefined,
       dateFrom: form.dateFrom || undefined, dateTo: form.dateTo || undefined,
+      posEV_only: form.posEV_only || undefined,
+      fade_btbs: form.fade_btbs || undefined,
     })
       .then(setResult)
       .catch(e => setError(e.response?.data?.detail ?? e.message))
       .finally(() => setLoading(false));
   }
 
-  function handleSave() {
-    addStrategy({ ...form, stake: Number(form.stake) });
-    setSaved(true);
+  function openSaveModal() {
+    const user = loadUser();
+    if (!user?.userID) {
+      setSaveError("Log in to save strategies to your account.");
+      return;
+    }
+    setSaveError(null);
+    setStrategyNameInput("");
+    setSaveModalOpen(true);
   }
+
+  function closeSaveModal() {
+    setSaveModalOpen(false);
+    setSaveError(null);
+  }
+
+  async function handleSave() {
+    const user = loadUser();
+    if (!user?.userID) {
+      setSaveError("Log in to save strategies to your account.");
+      return;
+    }
+    setSaveError(null);
+    setSaveSubmitting(true);
+    try {
+      const body = buildCreateStrategyBody(user.userID, form, {
+        strategyName: strategyNameInput.trim(),
+      });
+      const created = await createStrategy(body);
+      await logStrategyRun(created.strategyID).catch(() => {});
+      setSaved(true);
+      closeSaveModal();
+    } catch (err) {
+      setSaveError(apiErrorMessage(err));
+    } finally {
+      setSaveSubmitting(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!saveModalOpen) return;
+    function onKey(e) {
+      if (e.key === "Escape") {
+        setSaveModalOpen(false);
+        setSaveError(null);
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [saveModalOpen]);
 
   const s = result?.stats;
   const bets = result?.bets ?? [];
@@ -268,12 +335,30 @@ export default function BacktestPage() {
             <input type="date" name="dateTo" value={form.dateTo} onChange={handleField} />
           </div>
 
+          <div className="filter-group">
+            <label className="filter-checkbox-block">
+              <span className="filter-group-label-text">Positive EV only</span>
+              <span className="filter-checkbox-row">
+                <input type="checkbox" name="posEV_only" checked={form.posEV_only} onChange={handleField} />
+              </span>
+            </label>
+          </div>
+
+          <div className="filter-group">
+            <label className="filter-checkbox-block">
+              <span className="filter-group-label-text">Skip back-to-back</span>
+              <span className="filter-checkbox-row">
+                <input type="checkbox" name="fade_btbs" checked={form.fade_btbs} onChange={handleField} />
+              </span>
+            </label>
+          </div>
+
           <div className="filter-actions">
             <button type="submit" className="btn btn-primary" disabled={loading}>
               {loading ? "Running…" : "Run Backtest"}
             </button>
             {result && !saved && (
-              <button type="button" className="btn btn-ghost" onClick={handleSave}>
+              <button type="button" className="btn btn-ghost" onClick={openSaveModal}>
                 Save Strategy
               </button>
             )}
@@ -285,6 +370,9 @@ export default function BacktestPage() {
           </div>
 
         </form>
+        {saveError && !saveModalOpen && (
+          <div className="error-msg" style={{ marginTop: "1rem" }} role="alert">{saveError}</div>
+        )}
       </div>
 
       {loading && (
@@ -450,6 +538,44 @@ export default function BacktestPage() {
             )}
           </div>
         </>
+      )}
+
+      {saveModalOpen && (
+        <div className="modal-backdrop" role="presentation" onClick={closeSaveModal}>
+          <div
+            className="modal-sheet modal-sheet--sm"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="save-strategy-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="save-strategy-title" className="modal-title">Save strategy</h2>
+            <p className="modal-hint">Give this setup a name. Leave blank to use the auto label below.</p>
+            <label className="modal-label" htmlFor="modal-strategy-name">Strategy name</label>
+            <input
+              id="modal-strategy-name"
+              className="modal-input"
+              type="text"
+              value={strategyNameInput}
+              onChange={(e) => setStrategyNameInput(e.target.value)}
+              placeholder={strategyLabel({ ...form, stake: Number(form.stake) })}
+              maxLength={200}
+              autoComplete="off"
+              autoFocus
+            />
+            {saveError && (
+              <div className="error-msg modal-error" role="alert">{saveError}</div>
+            )}
+            <div className="modal-actions">
+              <button type="button" className="btn btn-ghost" onClick={closeSaveModal} disabled={saveSubmitting}>
+                Cancel
+              </button>
+              <button type="button" className="btn btn-primary" onClick={handleSave} disabled={saveSubmitting}>
+                {saveSubmitting ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

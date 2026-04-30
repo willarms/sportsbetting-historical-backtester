@@ -38,6 +38,13 @@ NBA_TEAMS = {
     "Utah Jazz", "Washington Wizards",
 }
 
+
+def _games_df_rows_for_path_id(game_id: str):
+    """URL segments are strings; DB game_id may be numeric — compare as string."""
+    key = str(game_id).strip()
+    return data.games_df[data.games_df["game_id"].astype(str) == key]
+
+
 # API Routes
 
 @app.get("/api/health")
@@ -104,7 +111,7 @@ def get_games(
 
 @app.get("/api/games/{game_id}")
 def get_game(game_id: str):
-    row = data.games_df[data.games_df["game_id"] == game_id]
+    row = _games_df_rows_for_path_id(game_id)
     if row.empty:
         raise HTTPException(status_code=404, detail="Game not found")
     record = row.iloc[0].to_dict()
@@ -312,7 +319,7 @@ def run_backtest(
 
 @app.get("/api/games/{game_id}/odds")
 def get_game_odds(game_id: str):
-    game_row = data.games_df[data.games_df["game_id"] == game_id]
+    game_row = _games_df_rows_for_path_id(game_id)
     if game_row.empty:
         raise HTTPException(status_code=404, detail="Game not found")
 

@@ -403,12 +403,146 @@ td, .stat-value, .score, .num,
   border-color: var(--brand);
   box-shadow: 0 0 0 3px var(--brand-soft);
 }
+/* Checkbox filters — same 38px control height and shell as selects */
+.filter-group label.filter-checkbox-block {
+  /* .filter-group label would uppercase the whole control; reset for captions */
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+  color: inherit;
+}
+.filter-checkbox-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  cursor: pointer;
+  margin: 0;
+  align-self: stretch;
+}
+.filter-checkbox-block > .filter-group-label-text {
+  font-size: 0.68rem;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 600;
+}
+.filter-checkbox-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  height: 38px;
+  padding: 0 0.85rem;
+  cursor: pointer;
+  transition: var(--transition);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset;
+  width: 100%;
+  min-width: 0;
+}
+.filter-checkbox-row:hover {
+  border-color: var(--border-strong);
+}
+.filter-checkbox-row:focus-within {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
+.filter-checkbox-row input[type="checkbox"] {
+  accent-color: var(--brand);
+  width: 1.1rem;
+  height: 1.1rem;
+  cursor: pointer;
+  margin: 0;
+}
+
 .filter-actions {
   display: flex;
   gap: 0.5rem;
   margin-left: auto;
-  align-items: center;
+  align-items: flex-end;
   flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+
+/* ── Modal (save strategy, etc.) ─────────────────────────── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(5, 8, 13, 0.72);
+  backdrop-filter: saturate(180%) blur(8px);
+  -webkit-backdrop-filter: saturate(180%) blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+}
+.modal-sheet {
+  background: var(--surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  width: 100%;
+  max-width: 28rem;
+  padding: 1.35rem 1.5rem;
+}
+.modal-sheet--sm { max-width: 22rem; }
+.modal-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.35rem;
+  color: var(--text);
+}
+.modal-hint {
+  margin: 0 0 1rem;
+  font-size: 0.85rem;
+  color: var(--text-2);
+  line-height: 1.45;
+}
+.modal-label {
+  display: block;
+  font-size: 0.68rem;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+.modal-input {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 0 0.85rem;
+  height: 40px;
+  font-size: 0.9rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset;
+  transition: var(--transition);
+}
+.modal-input::placeholder {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+.modal-input:hover { border-color: var(--border-strong); }
+.modal-input:focus {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
+.modal-error {
+  margin-bottom: 1rem;
+}
+.modal-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
 }
 
 /* ── Buttons ──────────────────────────────────────────────── */
@@ -564,6 +698,35 @@ tbody td.no-odds          { color: var(--text-muted); }
   margin-bottom: 0.85rem;
   font-weight: 700;
 }
+
+/* Two-column home/away (or over/under) odds on game detail */
+.odds-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem 1.25rem;
+  align-items: start;
+}
+@media (max-width: 768px) {
+  .odds-split { grid-template-columns: 1fr; }
+}
+.odds-split-heading {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-2);
+  font-weight: 700;
+  margin: 0 0 0.55rem;
+}
+.odds-split-col .table-wrap { margin-bottom: 0; }
+.odds-split-empty {
+  color: var(--text-3);
+  font-size: 0.82rem;
+  padding: 0.85rem 0;
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+}
+
 .meta {
   font-size: 0.8rem;
   color: var(--text-3);
@@ -605,6 +768,7 @@ tbody td.no-odds          { color: var(--text-muted); }
 .strategy-row:hover    { border-color: var(--border-strong); }
 .strategy-meta         { flex: 1; min-width: 0; }
 .strategy-title        { font-weight: 600; margin-bottom: 0.2rem; color: var(--text); }
+.strategy-detail       { font-size: 0.85rem; color: var(--text-2); margin-bottom: 0.25rem; }
 .strategy-sub          { font-size: 0.8rem; color: var(--text-3); }
 .strategy-date         { color: var(--text-muted); font-size: 0.75rem; white-space: nowrap; }
 .strategy-list {

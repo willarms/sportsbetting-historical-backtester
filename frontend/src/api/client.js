@@ -69,12 +69,17 @@ export async function fetchGames({ team, season, book, dateFrom, dateTo, page = 
   return data;
 }
 
-export async function runBacktest({ market, side, book, stake, team, season, dateFrom, dateTo } = {}) {
+export async function runBacktest({
+  market, side, book, stake, team, season, dateFrom, dateTo,
+  posEV_only, fade_btbs,
+} = {}) {
   const params = { market, side, book, stake };
-  if (team)     params.team      = team;
-  if (season)   params.season    = season;
-  if (dateFrom) params.date_from = dateFrom;
-  if (dateTo)   params.date_to   = dateTo;
+  if (team)       params.team       = team;
+  if (season)     params.season     = season;
+  if (dateFrom)   params.date_from  = dateFrom;
+  if (dateTo)     params.date_to    = dateTo;
+  if (posEV_only) params.posEV_only = true;
+  if (fade_btbs)  params.fade_btbs  = true;
   const { data } = await api.get("/backtest", { params });
   return data;
 }
