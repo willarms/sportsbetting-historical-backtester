@@ -21,7 +21,7 @@ app = FastAPI(title="Sports Betting Backtester API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173",
-                   "http://3.217.167.62:8069/"],
+                   "http://3.217.167.62:8010/"],
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
@@ -164,11 +164,24 @@ def _enrich(record: dict, book: str) -> dict:
 def health():
     return {"status": "ok"}
 
+# there are non nba teams in the dataset (ex: all star weekend teams) that we don't care about betting on or offering
+NBA_TEAMS = {
+    "Atlanta Hawks", "Boston Celtics", "Brooklyn Nets", "Charlotte Hornets",
+    "Chicago Bulls", "Cleveland Cavaliers", "Dallas Mavericks", "Denver Nuggets",
+    "Detroit Pistons", "Golden State Warriors", "Houston Rockets", "Indiana Pacers",
+    "LA Clippers", "Los Angeles Lakers", "Memphis Grizzlies", "Miami Heat",
+    "Milwaukee Bucks", "Minnesota Timberwolves", "New Orleans Pelicans", "New York Knicks",
+    "Oklahoma City Thunder", "Orlando Magic", "Philadelphia 76ers", "Phoenix Suns",
+    "Portland Trail Blazers", "Sacramento Kings", "San Antonio Spurs", "Toronto Raptors",
+    "Utah Jazz", "Washington Wizards",
+}
+
 @app.get("/api/teams")
 def get_teams():
     home = data.games_df["home_team"].dropna().unique().tolist()
     away = data.games_df["away_team"].dropna().unique().tolist()
-    return sorted(set(home + away))
+    all_teams = set(home + away)
+    return sorted(all_teams & NBA_TEAMS)    # makes sure only NBA teams are returned
 
 @app.get("/api/seasons")
 def get_seasons():
@@ -458,19 +471,19 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
-class UpdateUserRequest(BaseModel):
-    email:    Optional[str] = None
-    username: Optional[str] = None
-    password: Optional[str] = None
 
 @app.post("/api/users/register", status_code=201)
 def register_user(body: RegisterRequest):
+    email = body.email.strip()
+    username = body.username.strip()
+    if not email or not username:
+        raise HTTPException(status_code=400, detail="Email and username cannot be empty")
     hashed = _hash_password(body.password)
     with data._ENGINE.begin() as conn:
         # Check if username or email already taken
         existing = conn.execute(
             text("SELECT userID FROM Users WHERE username = :u OR email = :e"),
-            {"u": body.username, "e": body.email}
+            {"u": username, "e": email}
         ).fetchone()
         if existing:
             raise HTTPException(status_code=409, detail="Username or email already in use")
@@ -479,104 +492,50 @@ def register_user(body: RegisterRequest):
         row = conn.execute(text("SELECT NVL(MAX(userID), 0) + 1 FROM Users")).fetchone()
         new_id = int(row[0])
 
+        # Column name must match the DB (Oracle Users: USERID, EMAIL, USERNAME, PASSWORD).
         conn.execute(
             text("""
-                INSERT INTO Users (userID, email, username, password_hash)
+                INSERT INTO Users (userID, email, username, PASSWORD)
                 VALUES (:id, :email, :username, :pw)
             """),
-            {"id": new_id, "email": body.email, "username": body.username, "pw": hashed}
+            {"id": new_id, "email": email, "username": username, "pw": hashed}
         )
 
-    return {"userID": new_id, "username": body.username}
+    return {"userID": new_id, "username": username, "email": email}
 
 @app.post("/api/users/login")
 def login_user(body: LoginRequest):
+    ident = body.username.strip()
+    if not ident:
+        raise HTTPException(status_code=400, detail="Username or email cannot be empty")
     hashed = _hash_password(body.password)
     with data._ENGINE.connect() as conn:
         row = conn.execute(
-            text("SELECT userID, username FROM Users WHERE username = :u AND password_hash = :pw"),
-            {"u": body.username, "pw": hashed}
+            text(
+                "SELECT userID, username, email FROM Users "
+                "WHERE (username = :u OR email = :u) AND PASSWORD = :pw"
+            ),
+            {"u": ident, "pw": hashed}
         ).fetchone()
     if not row:
         raise HTTPException(status_code=401, detail="Invalid username or password")
-    return {"userID": int(row[0]), "username": row[1]}
+    return {
+        "userID":   int(row[0]),
+        "username": row[1],
+        "email":    row[2],
+    }
 
 @app.get("/api/users/{user_id}")
 def get_user(user_id: int):
     with data._ENGINE.connect() as conn:
         row = conn.execute(
-            text("SELECT userID, email, username, created_at FROM Users WHERE userID = :id"),
+            text("SELECT userID, email, username FROM Users WHERE userID = :id"),
             {"id": user_id}
         ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
     return {
-        "userID":     int(row[0]),
-        "email":      row[1],
-        "username":   row[2],
-        "created_at": str(row[3]) if row[3] else None,
+        "userID":   int(row[0]),
+        "email":    row[1],
+        "username": row[2],
     }
-
-@app.put("/api/users/{user_id}")
-def update_user(user_id: int, body: UpdateUserRequest):
-    if not any([body.email, body.username, body.password]):
-        raise HTTPException(status_code=400, detail="Nothing to update")
-
-    with data._ENGINE.begin() as conn:
-        # Verify user exists
-        row = conn.execute(
-            text("SELECT userID FROM Users WHERE userID = :id"), {"id": user_id}
-        ).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        if body.email:
-            conn.execute(
-                text("UPDATE Users SET email = :v WHERE userID = :id"),
-                {"v": body.email, "id": user_id}
-            )
-        if body.username:
-            conn.execute(
-                text("UPDATE Users SET username = :v WHERE userID = :id"),
-                {"v": body.username, "id": user_id}
-            )
-        if body.password:
-            conn.execute(
-                text("UPDATE Users SET password_hash = :v WHERE userID = :id"),
-                {"v": _hash_password(body.password), "id": user_id}
-            )
-
-    return {"userID": user_id, "updated": True}
-
-@app.delete("/api/users/{user_id}", status_code=200)
-def delete_user(user_id: int):
-    with data._ENGINE.begin() as conn:
-        row = conn.execute(
-            text("SELECT userID FROM Users WHERE userID = :id"), {"id": user_id}
-        ).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        # Delete in foreign key order: Bets → StrategyRuns → Strategies → Users to maintain referential integrity
-        conn.execute(text("""
-            DELETE FROM Bets WHERE runID IN (
-                SELECT sr.runID FROM StrategyRuns sr
-                JOIN Strategies s ON sr.strategyID = s.strategyID
-                WHERE s.userID = :id
-            )
-        """), {"id": user_id})
-
-        conn.execute(text("""
-            DELETE FROM StrategyRuns WHERE strategyID IN (
-                SELECT strategyID FROM Strategies WHERE userID = :id
-            )
-        """), {"id": user_id})
-
-        conn.execute(
-            text("DELETE FROM Strategies WHERE userID = :id"), {"id": user_id}
-        )
-
-        conn.execute(
-            text("DELETE FROM Users WHERE userID = :id"), {"id": user_id}
-        )
-    return {"userID": user_id, "deleted": True}
