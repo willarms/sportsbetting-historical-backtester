@@ -111,7 +111,13 @@ export default function GamesPage() {
 
   return (
     <>
-      <h1 className="page-title">Games</h1>
+      <div className="page-hero">
+        <h1>
+          Games
+          {result && <span className="count">{result.total.toLocaleString()} total</span>}
+        </h1>
+        <p>Browse historical NBA games with closing-line odds across major books. Click a row to see every bookmaker's price.</p>
+      </div>
 
       {/* Filters */}
       <div className="card" style={{ marginBottom: "1.25rem" }}>
@@ -152,17 +158,14 @@ export default function GamesPage() {
             <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
           </div>
 
-          <div className="filter-group" style={{ justifyContent: "flex-end" }}>
-            <div style={{ display: "flex", gap: "0.5rem" }}>
-              <button type="submit" className="btn btn-primary">Apply</button>
-              <button type="button" className="btn btn-ghost" onClick={handleReset}>Reset</button>
-            </div>
+          <div className="filter-actions">
+            <button type="submit" className="btn btn-primary">Apply</button>
+            <button type="button" className="btn btn-ghost" onClick={handleReset}>Reset</button>
           </div>
         </form>
       </div>
 
       {error && <div className="error-msg">{error}</div>}
-      {result && <p className="meta">{result.total.toLocaleString()} games</p>}
 
       <div className="card">
         {loading ? (
@@ -186,7 +189,7 @@ export default function GamesPage() {
               </thead>
               <tbody>
                 {games.map((g) => (
-                  <tr key={g.game_id} onClick={() => navigate(`/games/${g.game_id}`)}>
+                  <tr key={g.game_id} className="clickable" onClick={() => navigate(`/games/${g.game_id}`)}>
                     <td style={{ whiteSpace: "nowrap" }}>{g.game_date}</td>
                     <td>{g.home_team}</td>
                     <td>{g.away_team}</td>

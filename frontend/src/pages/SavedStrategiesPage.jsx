@@ -1,77 +1,144 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { loadStrategies, removeStrategy, strategyToSearch } from "../utils/strategies.js";
+import { useEffect, useState, useCallback } from "react";
+import { useNavigate, Link } from "react-router-dom";
+import { strategyToSearch, strategyFromApi } from "../utils/strategies.js";
 import { bookLabel } from "../utils/bookmakers.js";
+import { loadUser } from "../utils/auth.js";
+import { fetchUserStrategies, deleteStrategy, apiErrorMessage } from "../api/client.js";
 
-const MARKET_LABELS = { h2h: "Moneyline", spreads: "Spread", totals: "Totals" };
+const MARKET_LABELS = { h2h: "Moneyline", spreads: "Spread", totals: "Total" };
 const SIDE_LABELS   = { HOME: "Home", AWAY: "Away", OVER: "Over", UNDER: "Under" };
 
-function ParamSummary({ params }) {
+/** Line 2: market · side · book · team · season */
+function strategySummaryLine(params) {
+  const parts = [
+    MARKET_LABELS[params.market] ?? params.market,
+    SIDE_LABELS[params.side] ?? params.side,
+    bookLabel(params.book),
+  ];
+  if (params.team)   parts.push(params.team);
+  if (params.season) parts.push(params.season);
+  return parts.join(" · ");
+}
+
+/** Line 3: season · $stake/bet · date range (and optional filter tags) */
+function strategyMetaLine(params) {
   const parts = [];
-  if (params.team)     parts.push(params.team);
-  if (params.season)   parts.push(params.season);
-  if (params.dateFrom || params.dateTo) {
-    parts.push([params.dateFrom, params.dateTo].filter(Boolean).join(" → "));
-  }
+  if (params.season) parts.push(params.season);
   parts.push(`$${params.stake}/bet`);
-  return <span style={{ color: "var(--muted)", fontSize: "0.8rem" }}>{parts.join(" · ")}</span>;
+  let datePart = "—";
+  if (params.dateFrom && params.dateTo) datePart = `${params.dateFrom} → ${params.dateTo}`;
+  else if (params.dateFrom) datePart = `${params.dateFrom} → …`;
+  else if (params.dateTo) datePart = `… → ${params.dateTo}`;
+  else datePart = "All Games";
+  parts.push(datePart);
+  if (params.posEV_only) parts.push("pos EV");
+  if (params.fade_btbs) parts.push("no BTB");
+  return parts.join(" · ");
 }
 
 export default function SavedStrategiesPage() {
   const navigate = useNavigate();
-  const [strategies, setStrategies] = useState(() => loadStrategies());
+  const user = loadUser();
+  const [strategies, setStrategies] = useState([]);
+  const [loading, setLoading] = useState(!!user?.userID);
+  const [error, setError] = useState(null);
 
-  function handleDelete(id) {
-    setStrategies(removeStrategy(id));
+  const refresh = useCallback(async () => {
+    if (!user?.userID) {
+      setStrategies([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const rows = await fetchUserStrategies(user.userID);
+      setStrategies(rows.map(strategyFromApi));
+    } catch (e) {
+      setError(apiErrorMessage(e));
+      setStrategies([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [user?.userID]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  async function handleDelete(strategyID) {
+    if (!window.confirm("Delete this saved strategy?")) return;
+    try {
+      await deleteStrategy(strategyID);
+      setStrategies((list) => list.filter((s) => s.strategyID !== strategyID));
+    } catch (e) {
+      setError(apiErrorMessage(e));
+    }
   }
 
   function handleRun(params) {
     navigate(`/backtest?${strategyToSearch(params)}`);
   }
 
-  return (
-    <>
-      <h1 className="page-title">
-        Saved Strategies
-        {strategies.length > 0 && (
-          <span style={{ marginLeft: "0.75rem", fontSize: "0.9rem", fontWeight: 400, color: "var(--muted)" }}>
-            {strategies.length}
-          </span>
-        )}
-      </h1>
-
-      {strategies.length === 0 ? (
+  if (!user?.userID) {
+    return (
+      <>
+        <div className="page-hero">
+          <h1>Saved Strategies</h1>
+          <p>Sign in to save backtests to your account and open them from any device.</p>
+        </div>
         <div className="card">
           <p className="empty">
-            No saved strategies yet. Run a backtest and hit <strong>Save Strategy</strong> to save it here.
+            <Link to="/login">Log in</Link>
+            {" · "}
+            <Link to="/register">Create an account</Link>
+          </p>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="page-hero">
+        <h1>
+          Saved Strategies
+          {strategies.length > 0 && <span className="count">{strategies.length}</span>}
+        </h1>
+        <p>Strategies stored in your account. One click re-runs them with the latest data.</p>
+      </div>
+
+      {error && <div className="error-msg">{error}</div>}
+
+      {loading ? (
+        <p className="loading">Loading strategies…</p>
+      ) : strategies.length === 0 ? (
+        <div className="card">
+          <p className="empty">
+            No saved strategies yet. Run a backtest, then use <strong>Save Strategy</strong> to store it here.
           </p>
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+        <div className="strategy-list">
           {strategies.map((s) => (
-            <div key={s.id} className="card" style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 600, marginBottom: "0.2rem" }}>
-                  {MARKET_LABELS[s.params.market] ?? s.params.market}
-                  {" · "}
-                  {SIDE_LABELS[s.params.side] ?? s.params.side}
-                  {" · "}
-                  {bookLabel(s.params.book)}
+            <div key={s.strategyID} className="strategy-row">
+              <div className="strategy-meta">
+                <div className="strategy-title">
+                  {s.strategyName}
                 </div>
-                <ParamSummary params={s.params} />
+                <div className="strategy-detail">
+                  {strategySummaryLine(s.params)}
+                </div>
+                <span className="strategy-sub">{strategyMetaLine(s.params)}</span>
               </div>
-              <div style={{ color: "#3d4460", fontSize: "0.75rem", whiteSpace: "nowrap" }}>
-                {new Date(s.savedAt).toLocaleDateString()}
+              <div className="strategy-date">
+                {s.savedAt ? new Date(s.savedAt).toLocaleDateString() : "—"}
               </div>
               <div style={{ display: "flex", gap: "0.5rem" }}>
-                <button className="btn btn-primary" onClick={() => handleRun(s.params)}>
+                <button type="button" className="btn btn-primary" onClick={() => handleRun(s.params)}>
                   Run
                 </button>
-                <button
-                  className="btn btn-ghost"
-                  style={{ color: "var(--red)", borderColor: "#450a0a" }}
-                  onClick={() => handleDelete(s.id)}
-                >
+                <button type="button" className="btn btn-danger" onClick={() => handleDelete(s.strategyID)}>
                   Delete
                 </button>
               </div>
